@@ -1,0 +1,100 @@
+#define TRIG_PIN 9
+#define ECHO_PIN 10
+#define LED_PIN  3
+#define BTN_PIN  2   // button to GND
+
+float smoothCm = 50;   // smoothed distance (cm)
+
+// button toggle + debounce
+bool systemEnabled = true;
+bool lastBtnReading = HIGH;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 40;
+
+// LED flashing
+bool ledState = LOW;
+unsigned long lastToggleTime = 0;
+
+void handleButtonToggle() {
+  bool reading = digitalRead(BTN_PIN);
+
+  if (reading != lastBtnReading) {
+    lastDebounceTime = millis();
+  }
+
+  if (millis() - lastDebounceTime > debounceDelay) {
+    static bool stableState = HIGH;
+    if (reading != stableState) {
+      stableState = reading;
+      if (stableState == LOW) {
+        systemEnabled = !systemEnabled;
+      }
+    }
+  }
+
+  lastBtnReading = reading;
+}
+
+void setup() {
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BTN_PIN, INPUT_PULLUP);
+
+  Serial.begin(9600);
+}
+
+void loop() {
+  handleButtonToggle();
+
+  if (!systemEnabled) {
+    digitalWrite(LED_PIN, LOW);
+    delay(20);
+    return;
+  }
+
+  // Trigger ultrasonic pulse
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  long us = pulseIn(ECHO_PIN, HIGH, 15000);
+
+  if (us == 0) {
+    digitalWrite(LED_PIN, LOW);
+    delay(50);
+    return;
+  }
+
+  // Distance + smoothing
+  float cm = us * 0.034f / 2.0f;
+  smoothCm = 0.7f * smoothCm + 0.3f * cm;
+
+  int d = constrain((int)(smoothCm + 0.5f), 10, 80);
+
+  // Map distance to flash interval (ms)
+  // Closer = faster flash
+  int interval = map(d, 80, 10, 800, 100);
+  interval = constrain(interval, 100, 800);
+
+  // Non-blocking LED flash
+  unsigned long now = millis();
+  if (now - lastToggleTime >= interval) {
+    lastToggleTime = now;
+    ledState = !ledState;
+    digitalWrite(LED_PIN, ledState);
+  }
+
+  Serial.print("enabled: ");
+  Serial.print(systemEnabled ? "ON" : "OFF");
+  Serial.print("  cm: ");
+  Serial.print(cm, 1);
+  Serial.print("  smooth: ");
+  Serial.print(smoothCm, 1);
+  Serial.print("  interval(ms): ");
+  Serial.println(interval);
+
+  delay(20);
+}

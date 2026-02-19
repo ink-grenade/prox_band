@@ -1,0 +1,117 @@
+#define TRIG_PIN   9
+#define ECHO_PIN   10
+#define LED_PIN    3
+#define DBG_LED    13
+#define BTN_PIN    2   // pushbutton to GND
+
+const int MIN_CM   = 10;
+const int START_CM = 80;
+
+const int PWM_MIN_ACTIVE = 0;   // LED: allow fade from 0
+const int PWM_MAX        = 255;
+
+float filteredCm = START_CM;
+const float alpha = 0.55f;
+
+// Button toggle + debounce
+bool systemEnabled = true;
+bool lastBtnReading = HIGH;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 40;
+
+long readEchoUs() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  return pulseIn(ECHO_PIN, HIGH, 30000);
+}
+
+void handleButtonToggle() {
+  bool reading = digitalRead(BTN_PIN);
+
+  if (reading != lastBtnReading) {
+    lastDebounceTime = millis();
+  }
+
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    // detect HIGH -> LOW (button press) because INPUT_PULLUP
+    static bool stableState = HIGH;
+    if (reading != stableState) {
+      stableState = reading;
+      if (stableState == LOW) {
+        systemEnabled = !systemEnabled; // toggle on press
+      }
+    }
+  }
+
+  lastBtnReading = reading;
+}
+
+void setup() {
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(DBG_LED, OUTPUT);
+
+  pinMode(BTN_PIN, INPUT_PULLUP); // button between BTN_PIN and GND
+
+  Serial.begin(9600);
+}
+
+void loop() {
+  handleButtonToggle();
+
+  // If OFF, force outputs off and skip sensor work
+  if (!systemEnabled) {
+    analogWrite(LED_PIN, 0);
+    digitalWrite(DBG_LED, LOW); // pin 13 is not PWM on UNO
+    delay(20);
+    return;
+  }
+
+  long us = readEchoUs();
+
+  if (us == 0) {
+    analogWrite(LED_PIN, 0);
+    digitalWrite(DBG_LED, LOW);
+    delay(50);
+    return;
+  }
+
+  int cm = (int)(us * 0.034f / 2.0f);
+
+  filteredCm = alpha * cm + (1.0f - alpha) * filteredCm;
+
+  int pwm = 0;
+
+  if (filteredCm <= START_CM) {
+    float x = (START_CM - filteredCm) / (float)(START_CM - MIN_CM);
+    x = constrain(x, 0.0f, 1.0f);
+
+    float y = sqrt(x); // “more sensitive far out” feel
+
+    pwm = PWM_MIN_ACTIVE + (int)(y * (PWM_MAX - PWM_MIN_ACTIVE));
+    pwm = constrain(pwm, PWM_MIN_ACTIVE, PWM_MAX);
+  } else {
+    pwm = 0;
+  }
+
+  analogWrite(LED_PIN, pwm);
+
+  // DBG_LED is pin 13 (no PWM). Approximate PWM by threshold:
+  digitalWrite(DBG_LED, (pwm > 0) ? HIGH : LOW);
+
+  static unsigned long lastPrint = 0;
+  unsigned long now = millis();
+  if (now - lastPrint > 250) {
+    lastPrint = now;
+    Serial.print("enabled: "); Serial.print(systemEnabled ? "ON" : "OFF");
+    Serial.print("  cm: "); Serial.print(cm);
+    Serial.print("  filt: "); Serial.print(filteredCm, 1);
+    Serial.print("  pwm: "); Serial.println(pwm);
+  }
+
+  delay(20);
+}

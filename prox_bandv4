@@ -1,0 +1,161 @@
+#define TRIG_PIN 9
+#define ECHO_PIN 10
+#define LED_PIN  3
+#define BTN_PIN  2   // button to GND (INPUT_PULLUP)
+
+enum Mode { INDOOR, OUTDOOR };
+Mode mode = INDOOR;
+
+bool systemEnabled = true;
+
+// Smoothing
+float smoothCm = 50;
+
+// Button handling
+bool lastReading = HIGH;
+bool stableState = HIGH;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 40;
+
+bool pressInProgress = false;
+unsigned long pressStartMs = 0;
+const unsigned long longPressMs = 1200; // hold to change mode
+bool longPressFired = false;
+
+void setup() {
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BTN_PIN, INPUT_PULLUP);
+
+  Serial.begin(9600);
+}
+
+long readEchoUs() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  // 15ms timeout (~2.5m). OK for both modes.
+  return pulseIn(ECHO_PIN, HIGH, 15000);
+}
+
+void handleButton() {
+  bool reading = digitalRead(BTN_PIN);
+
+  if (reading != lastReading) lastDebounceTime = millis();
+
+  if (millis() - lastDebounceTime > debounceDelay) {
+    if (reading != stableState) {
+      stableState = reading;
+
+      // Button just pressed (HIGH -> LOW)
+      if (stableState == LOW) {
+        pressInProgress = true;
+        pressStartMs = millis();
+        longPressFired = false;
+      }
+
+      // Button just released (LOW -> HIGH)
+      if (stableState == HIGH && pressInProgress) {
+        pressInProgress = false;
+
+        // If we didn't long-press, treat as short press = ON/OFF toggle
+        if (!longPressFired) {
+          systemEnabled = !systemEnabled;
+        }
+      }
+    }
+  }
+
+  // While held, check for long press
+  if (pressInProgress && !longPressFired) {
+    if (millis() - pressStartMs >= longPressMs) {
+      longPressFired = true;
+
+      // Toggle mode
+      mode = (mode == INDOOR) ? OUTDOOR : INDOOR;
+
+      // Optional: reset smoothing so it "settles" quickly in new mode
+      // (comment out if you don't want this)
+      // smoothCm = 50;
+    }
+  }
+
+  lastReading = reading;
+}
+
+void loop() {
+  handleButton();
+
+  if (!systemEnabled) {
+    analogWrite(LED_PIN, 0);
+    delay(30);
+    return;
+  }
+
+  long us = readEchoUs();
+  if (us == 0) {
+    analogWrite(LED_PIN, 0);
+    delay(60);
+    return;
+  }
+
+  float cm = us * 0.0343f / 2.0f;
+
+  // MODE SETTINGS
+  int minCm, maxCm;
+  float a;              // smoothing factor
+  float gamma;          // curve shaping (higher = less sensitive far away)
+
+  if (mode == INDOOR) {
+    // Less sensitive to far away things:
+    // - shorter range
+    // - smoother
+    // - curve that downplays far distances
+    minCm = 10;
+    maxCm = 60;
+    a = 0.85f;          // heavy smoothing (less jitter / less twitchy)
+    gamma = 1.8f;       // dims far-away response
+  } else {
+    // Outdoor:
+    // - longer range
+    // - more responsive
+    // - curve that makes far-away changes more noticeable
+    minCm = 10;
+    maxCm = 120;
+    a = 0.70f;          // lighter smoothing (more responsive)
+    gamma = 0.75f;      // boosts far-away response
+  }
+
+  // Smooth it
+  smoothCm = a * smoothCm + (1.0f - a) * cm;
+
+  // Convert distance to 0..1 "closeness"
+  float d = constrain(smoothCm, (float)minCm, (float)maxCm);
+  float x = (maxCm - d) / (float)(maxCm - minCm);  // 0 far, 1 close
+  x = constrain(x, 0.0f, 1.0f);
+
+  // Shape response
+  float y = pow(x, gamma);
+
+  int pwm = (int)(y * 255.0f + 0.5f);
+  pwm = constrain(pwm, 0, 255);
+
+  analogWrite(LED_PIN, pwm);
+
+  static unsigned long lastPrint = 0;
+  unsigned long now = millis();
+  if (now - lastPrint > 250) {
+    lastPrint = now;
+    Serial.print("enabled: "); Serial.print(systemEnabled ? "ON" : "OFF");
+    Serial.print("  mode: "); Serial.print(mode == INDOOR ? "INDOOR" : "OUTDOOR");
+    Serial.print("  cm: "); Serial.print(cm, 1);
+    Serial.print("  smooth: "); Serial.print(smoothCm, 1);
+    Serial.print("  pwm: "); Serial.println(pwm);
+  }
+
+  delay(30);
+}

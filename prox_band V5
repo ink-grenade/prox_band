@@ -1,0 +1,147 @@
+#define TRIG_PIN 9
+#define ECHO_PIN 10
+#define LED_PIN  3
+#define BTN_PIN  2   // button to GND (INPUT_PULLUP)
+
+enum Mode { INDOOR, OUTDOOR };
+Mode mode = INDOOR;
+
+bool systemEnabled = true;
+
+// Smoothing
+float smoothCm = 50;
+
+// Button handling
+bool lastReading = HIGH;
+bool stableState = HIGH;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 40;
+
+bool pressInProgress = false;
+unsigned long pressStartMs = 0;
+const unsigned long longPressMs = 1200; // hold to change mode
+bool longPressFired = false;
+
+long readEchoUs() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  return pulseIn(ECHO_PIN, HIGH, 15000);
+}
+
+// LED "vibration" pattern (later you can replace LED with motor driver)
+void pulseOutput(int pulses, int onMs = 120, int offMs = 90) {
+  for (int i = 0; i < pulses; i++) {
+    analogWrite(LED_PIN, 255);
+    delay(onMs);
+    analogWrite(LED_PIN, 0);
+    delay(offMs);
+  }
+}
+
+// Mode feedback + FORCE OFF
+void indicateModeAndForceOff() {
+  systemEnabled = false;
+  analogWrite(LED_PIN, 0);
+  delay(200); // silence gap
+
+  if (mode == INDOOR) pulseOutput(1);
+  else               pulseOutput(2);
+}
+
+void handleButton() {
+  bool reading = digitalRead(BTN_PIN);
+
+  if (reading != lastReading) lastDebounceTime = millis();
+
+  if (millis() - lastDebounceTime > debounceDelay) {
+    if (reading != stableState) {
+      stableState = reading;
+
+      if (stableState == LOW) {
+        pressInProgress = true;
+        pressStartMs = millis();
+        longPressFired = false;
+      }
+
+      if (stableState == HIGH && pressInProgress) {
+        pressInProgress = false;
+
+        if (!longPressFired) {
+          systemEnabled = !systemEnabled;
+          if (!systemEnabled) analogWrite(LED_PIN, 0);
+        }
+      }
+    }
+  }
+
+  if (pressInProgress && !longPressFired) {
+    if (millis() - pressStartMs >= longPressMs) {
+      longPressFired = true;
+
+      mode = (mode == INDOOR) ? OUTDOOR : INDOOR;
+      indicateModeAndForceOff();
+    }
+  }
+
+  lastReading = reading;
+}
+
+void setup() {
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(BTN_PIN, INPUT_PULLUP);
+
+  Serial.begin(9600);
+}
+
+void loop() {
+  handleButton();
+
+  if (!systemEnabled) {
+    delay(30);
+    return;
+  }
+
+  long us = readEchoUs();
+  if (us == 0) {
+    analogWrite(LED_PIN, 0);
+    delay(60);
+    return;
+  }
+
+  float cm = us * 0.0343f / 2.0f;
+
+  int minCm, maxCm;
+  float a, gamma;
+
+  if (mode == INDOOR) {
+    minCm = 10;
+    maxCm = 60;
+    a = 0.85f;
+    gamma = 1.8f;
+  } else {
+    minCm = 10;
+    maxCm = 120;
+    a = 0.70f;
+    gamma = 0.75f;
+  }
+
+  smoothCm = a * smoothCm + (1.0f - a) * cm;
+
+  float d = constrain(smoothCm, (float)minCm, (float)maxCm);
+  float x = (maxCm - d) / (float)(maxCm - minCm);
+  x = constrain(x, 0.0f, 1.0f);
+
+  float y = pow(x, gamma);
+  int pwm = (int)(y * 255.0f + 0.5f);
+  pwm = constrain(pwm, 0, 255);
+
+  analogWrite(LED_PIN, pwm);
+
+  delay(30);
+}

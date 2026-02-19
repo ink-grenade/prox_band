@@ -1,0 +1,92 @@
+#define TRIG_PIN 9
+#define ECHO_PIN 10
+#define LED_PIN  3
+#define BTN_PIN  2   // button to GND
+
+float smoothCm = 50;   // smoothed distance (cm)
+
+// button toggle + debounce
+bool systemEnabled = true;
+bool lastBtnReading = HIGH;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 40;
+
+void handleButtonToggle() {
+  bool reading = digitalRead(BTN_PIN);
+
+  if (reading != lastBtnReading) {
+    lastDebounceTime = millis();
+  }
+
+  if (millis() - lastDebounceTime > debounceDelay) {
+    static bool stableState = HIGH;
+    if (reading != stableState) {
+      stableState = reading;
+      if (stableState == LOW) {
+        systemEnabled = !systemEnabled;   // toggle on press
+      }
+    }
+  }
+
+  lastBtnReading = reading;
+}
+
+void setup() {
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+
+  pinMode(BTN_PIN, INPUT_PULLUP); // button between BTN_PIN and GND
+
+  Serial.begin(9600);
+}
+
+void loop() {
+  handleButtonToggle();
+
+  if (!systemEnabled) {
+    analogWrite(LED_PIN, 0);
+    Serial.println("OFF");
+    delay(50);
+    return;
+  }
+
+  // Trigger ultrasonic pulse
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  // Read echo (timeout ~15 ms = ~2.5 m)
+  long us = pulseIn(ECHO_PIN, HIGH, 15000);
+
+  if (us == 0) {
+    analogWrite(LED_PIN, 0);
+    Serial.println("No echo");
+    delay(100);
+    return;
+  }
+
+  // Convert to cm (float) then smooth
+  float cm = us * 0.034f / 2.0f;
+  smoothCm = 0.7f * smoothCm + 0.3f * cm;
+
+  // Map distance to brightness (closer = brighter)
+  int d = constrain((int)(smoothCm + 0.5f), 10, 80);
+  int pwm = map(d, 80, 10, 0, 255);
+  pwm = constrain(pwm, 0, 255);
+
+  analogWrite(LED_PIN, pwm);
+
+  Serial.print("enabled: ");
+  Serial.print(systemEnabled ? "ON" : "OFF");
+  Serial.print("  cm: ");
+  Serial.print(cm, 1);
+  Serial.print("  smooth: ");
+  Serial.print(smoothCm, 1);
+  Serial.print("  pwm: ");
+  Serial.println(pwm);
+
+  delay(50);
+}
